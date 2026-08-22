@@ -70,7 +70,8 @@
   .idrow{display:flex; gap:8px; align-items:center;}
   .idbox{
     flex:1; background:var(--panel-2); border:1px solid var(--line); border-radius:10px;
-    padding:12px; font-size:15px; letter-spacing:.03em; word-break:break-all;
+    padding:12px; font-size:28px; font-weight:700; letter-spacing:.25em; text-align:center;
+    word-break:break-all;
   }
   .iconbtn{
     border:1px solid var(--line); background:var(--panel-2); color:var(--text);
@@ -158,7 +159,7 @@
     <p class="status" id="statusText">Waiting for a connection…</p>
 
     <div class="row" style="margin-top:10px;">
-      <input type="text" id="peerInput" inputmode="text" autocomplete="off" placeholder="Enter their connection ID">
+      <input type="text" id="peerInput" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" placeholder="4-digit code">
       <button class="primary" id="connectBtn" type="button">Link</button>
     </div>
   </section>
@@ -274,52 +275,75 @@
     return;
   }
 
-  const peer = new Peer(); // auto-generates a free random ID via PeerJS cloud server
+  let peer;
+  let peerDestroyed = false;
+  let idAttempts = 0;
+  const MAX_ID_ATTEMPTS = 8;
 
-  function shortId(){
-    return Math.random().toString(36).slice(2, 6).toUpperCase() +
-           Math.random().toString(36).slice(2, 6).toUpperCase();
+  function makeShortId(){
+    // 4-digit numeric code, e.g. "0042" or "7391"
+    return Math.floor(Math.random() * 10000).toString().padStart(4, '0');
   }
 
-  peer.on('open', id => {
-    myIdEl.textContent = id;
-    if (typeof QRCode !== 'undefined') {
-      const holder = document.getElementById('qrCanvas');
-      holder.innerHTML = '';
-      new QRCode(holder, {text: id, width: 150, height: 150, colorDark: '#000000', colorLight: '#ffffff'});
-    }
-  });
+  function createPeer(){
+    peerDestroyed = false;
+    peer = new Peer(makeShortId());
+    wirePeerEvents();
+  }
+
+  function wirePeerEvents(){
+    peer.on('open', id => {
+      idAttempts = 0;
+      myIdEl.textContent = id;
+      if (typeof QRCode !== 'undefined') {
+        const holder = document.getElementById('qrCanvas');
+        holder.innerHTML = '';
+        new QRCode(holder, {text: id, width: 150, height: 150, colorDark: '#000000', colorLight: '#ffffff'});
+      }
+    });
+
+    peer.on('error', err => {
+      if (err.type === 'unavailable-id') {
+        idAttempts++;
+        if (idAttempts < MAX_ID_ATTEMPTS) {
+          statusText.textContent = 'That code is taken, picking another…';
+          try { peer.destroy(); } catch (e) {}
+          createPeer();
+          return;
+        }
+        statusText.textContent = 'Could not find a free code. Reload to try again.';
+        return;
+      }
+      statusText.textContent = 'Error: ' + (err.type || err.message || 'connection issue');
+    });
+
+    peer.on('close', () => { peerDestroyed = true; });
+
+    peer.on('connection', c => setupConnection(c));
+
+    peer.on('disconnected', () => {
+      if (peerDestroyed) {
+        statusText.textContent = 'Server link permanently lost. Reload the page for a new ID.';
+        return;
+      }
+      statusText.textContent = 'Reconnecting to server…';
+      setTimeout(() => {
+        if (peerDestroyed) {
+          statusText.textContent = 'Server link permanently lost. Reload the page for a new ID.';
+          return;
+        }
+        try { peer.reconnect(); }
+        catch (e) { console.error(e); statusText.textContent = 'Reload the page for a new ID.'; }
+      }, 1000);
+    });
+  }
+
+  createPeer();
 
   document.getElementById('qrToggle').addEventListener('click', function(){
     const box = document.getElementById('qrBox');
     box.classList.toggle('show');
     this.textContent = box.classList.contains('show') ? 'Hide QR code' : 'Show QR code';
-  });
-
-  let peerDestroyed = false;
-
-  peer.on('error', err => {
-    statusText.textContent = 'Error: ' + (err.type || err.message || 'connection issue');
-  });
-
-  peer.on('close', () => { peerDestroyed = true; });
-
-  peer.on('connection', c => setupConnection(c));
-
-  peer.on('disconnected', () => {
-    if (peerDestroyed) {
-      statusText.textContent = 'Server link permanently lost. Reload the page for a new ID.';
-      return;
-    }
-    statusText.textContent = 'Reconnecting to server…';
-    setTimeout(() => {
-      if (peerDestroyed) {
-        statusText.textContent = 'Server link permanently lost. Reload the page for a new ID.';
-        return;
-      }
-      try { peer.reconnect(); }
-      catch (e) { console.error(e); statusText.textContent = 'Reload the page for a new ID.'; }
-    }, 1000);
   });
 
   let remoteId = null;
@@ -352,9 +376,13 @@
     });
   });
 
+  peerInput.addEventListener('input', () => {
+    peerInput.value = peerInput.value.replace(/\D/g, '').slice(0, 4);
+  });
+
   connectBtn.addEventListener('click', () => {
     const target = peerInput.value.trim();
-    if (!target) return;
+    if (target.length !== 4) { statusText.textContent = 'Enter the other device\'s 4-digit code'; return; }
     statusText.textContent = 'Linking…';
     const c = peer.connect(target, {reliable:true});
     setupConnection(c);
